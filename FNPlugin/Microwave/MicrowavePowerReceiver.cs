@@ -18,7 +18,7 @@ namespace FNPlugin
         public string animName;
         [KSPField(isPersistant = false)]
         public string animTName;
-        [KSPField(isPersistant = false, guiActiveEditor= true)]
+        [KSPField(isPersistant = false, guiActiveEditor = true, guiActive = true, guiName = "Collector Area")]
         public float collectorArea = 1;
         [KSPField(isPersistant = false)]
         public bool isThermalReceiver;
@@ -28,7 +28,7 @@ namespace FNPlugin
         public float ThermalTemp;
         [KSPField(isPersistant = false)]
         public float ThermalPower;
-        [KSPField(isPersistant = false, guiActiveEditor= true)]
+        [KSPField(isPersistant = false, guiActiveEditor= true, guiName= "Radius")]
         public float radius;
         [KSPField(isPersistant = false)]
         public float heatTransportationEfficiency = 0.7f;
@@ -38,6 +38,10 @@ namespace FNPlugin
         public float powerHeatMultiplier = 20f;
         [KSPField(isPersistant = false)]
         public float powerHeatBase = 1600f;
+        [KSPField(isPersistant = false)]
+        public float receiverType = 0;
+        [KSPField(isPersistant = false)]
+        public float microwaveDishEfficiency = (float)GameConstants.microwave_dish_efficiency;
 
         //GUI
         [KSPField(isPersistant = false, guiActive = true, guiName = "Core Temperature")]
@@ -297,6 +301,11 @@ namespace FNPlugin
 
         uint counter = 0;       // OnFixedUpdate cycle counter
 
+        private float GetAtmosphericEfficiency(Vessel v)
+        {
+            return (float)Math.Exp(-(FlightGlobals.getStaticPressure(v.transform.position) / 100) / 5);
+        }
+
         public override void OnFixedUpdate()
         {
             base.OnFixedUpdate();
@@ -320,8 +329,8 @@ namespace FNPlugin
                     connectedrelaysi = 0;
                     networkDepth = 0;
 
-                    atmosphericefficiency = (float)Math.Exp(- (FlightGlobals.getStaticPressure(vessel.transform.position) / 100) / 5);
-                    efficiency_d = GameConstants.microwave_dish_efficiency * atmosphericefficiency;
+                    atmosphericefficiency = GetAtmosphericEfficiency(this.vessel);
+                    efficiency_d = microwaveDishEfficiency * atmosphericefficiency;
                     deactivate_timer = 0;
 
                     HashSet<VesselRelayPersistence> usedRelays = new HashSet<VesselRelayPersistence>();
@@ -360,7 +369,7 @@ namespace FNPlugin
                     connectedsatsi = activeSatsIncr;
                     connectedrelaysi = usedRelays.Count;
 
-                    powerInputMegajoules = total_power / 1000.0 * GameConstants.microwave_dish_efficiency * atmosphericefficiency * receiptPower / 100.0f;
+                    powerInputMegajoules = total_power / 1000.0 * microwaveDishEfficiency * atmosphericefficiency * receiptPower / 100.0f;
                     powerInput = powerInputMegajoules * 1000.0f;
                 }
 
@@ -377,7 +386,7 @@ namespace FNPlugin
                 if (!isThermalReceiver)
                 {
                     supplyFNResource(powerInputMegajoules * TimeWarp.fixedDeltaTime, FNResourceManager.FNRESOURCE_MEGAJOULES);
-                    double waste_heat_production = powerInputMegajoules / GameConstants.microwave_dish_efficiency * (1.0f - GameConstants.microwave_dish_efficiency);
+                    double waste_heat_production = powerInputMegajoules / microwaveDishEfficiency * (1.0f - microwaveDishEfficiency);
                     supplyFNResource(waste_heat_production * TimeWarp.fixedDeltaTime, FNResourceManager.FNRESOURCE_WASTEHEAT);
                 }
                 else
@@ -537,7 +546,7 @@ namespace FNPlugin
         protected double ComputeVisibilityAndDistance(VesselRelayPersistence r, Vessel v)
         {
             //return r.lineOfSightTo(v) ? Vector3d.Distance(PluginHelper.getVesselPos(r.getVessel()), PluginHelper.getVesselPos(v)) : -1;
-            return PluginHelper.HasLineOfSightWith(this.vessel, v) 
+            return PluginHelper.HasLineOfSightWith(r.getVessel(), v, 0) 
                 ? Vector3d.Distance(PluginHelper.getVesselPos(r.getVessel()), PluginHelper.getVesselPos(v)) 
                 : -1;
         }
@@ -547,7 +556,7 @@ namespace FNPlugin
             return Vector3d.Distance(PluginHelper.getVesselPos(v1), PluginHelper.getVesselPos(v2));
         }
 
-        protected double ComputeTransmissionEfficiency(double distance, double facingFactor)
+        protected double ComputeDistanceFacingEfficiency(double distance, double facingFactor)
         {
             double powerdissip = 1;
 
@@ -559,20 +568,27 @@ namespace FNPlugin
 
         protected double ComputeFacingFactor(Vessel powerVessel)
         {
-            double facingFactor = 1;
+            double facingFactor;
 
             Vector3d powerv = PluginHelper.getVesselPos(powerVessel);
             Vector3d directionVector = (powerv - vessel.transform.position).normalized;
-            if (!isInlineReceiver)
+
+            if (receiverType == 2)
             {
-                //Scale energy reception based on angle of reciever to transmitter
-                facingFactor = Vector3d.Dot(part.transform.up, directionVector);
-                facingFactor = Math.Max(0, facingFactor);
+                // get the best result of inline and directed reciever
+                var facingFactorA = Math.Min(1.0 - Math.Abs(Vector3d.Dot(part.transform.up, directionVector)), 1);
+                var facingFactorB = Math.Max(0, Vector3d.Dot(part.transform.up, directionVector));
+                facingFactor = Math.Max(facingFactorA, facingFactorB);
+            }
+            else if (isInlineReceiver || receiverType == 1)
+            {
+                // recieve
+                facingFactor = Math.Min(1.0 - Math.Abs(Vector3d.Dot(part.transform.up, directionVector)), 1);
             }
             else
             {
-                facingFactor = 1.0 - Math.Abs(Vector3d.Dot(part.transform.up, directionVector));
-                facingFactor = Math.Min(facingFactor, 1);
+                //Scale energy reception based on angle of reciever to transmitter
+                facingFactor = Math.Max(0, Vector3d.Dot(part.transform.up, directionVector));
             }
 
             return facingFactor;
@@ -606,10 +622,12 @@ namespace FNPlugin
                 //if (lineOfSightTo(transmitter.getVessel()))
                 if (PluginHelper.HasLineOfSightWith(this.vessel, transmitterVessel))
                 {
-                    double distance = ComputeDistance(vessel, transmitterVessel);
+                    double distance = ComputeDistance(this.vessel, transmitterVessel);
                     double facingFactor = ComputeFacingFactor(transmitterVessel);
-                    double efficiency = ComputeTransmissionEfficiency(distance, facingFactor);
-                    transmitterRouteDictionary[transmitter] = new MicrowaveRoute(efficiency, distance, facingFactor); //store in dictionary that optimal route to this transmitter is direct connection, can be replaced if better route is found
+                    double distanceFacingEfficiency = ComputeDistanceFacingEfficiency(distance, facingFactor);
+                    double atmosphereEfficency = GetAtmosphericEfficiency(transmitterVessel);
+                    double transmitterEfficency = distanceFacingEfficiency * atmosphereEfficency;
+                    transmitterRouteDictionary[transmitter] = new MicrowaveRoute(transmitterEfficency, distance, facingFactor); //store in dictionary that optimal route to this transmitter is direct connection, can be replaced if better route is found
                 }
                 transmittersToCheck.Add(transmitter);
             }
@@ -632,8 +650,10 @@ namespace FNPlugin
                 {
                     double distance = ComputeDistance(vessel, relayVessel);
                     double facingFactor = ComputeFacingFactor(relayVessel);
-                    double efficiency = ComputeTransmissionEfficiency(distance, facingFactor);
-                    relayRouteDictionary[relay] = new MicrowaveRoute(efficiency, distance, facingFactor);//store in dictionary that optimal route to this relay is direct connection, can be replaced if better route is found
+                    double distanceFacingEfficiency = ComputeDistanceFacingEfficiency(distance, facingFactor);
+                    double atmosphereEfficency = GetAtmosphericEfficiency(relayVessel);
+                    double transmitterEfficency = distanceFacingEfficiency * atmosphereEfficency;
+                    relayRouteDictionary[relay] = new MicrowaveRoute(transmitterEfficency, distance, facingFactor);//store in dictionary that optimal route to this relay is direct connection, can be replaced if better route is found
                     currentRelayGroup.Add(new KeyValuePair<VesselRelayPersistence, int>(relay, relayIndex));
                 }
                 relaysToCheck.Add(relay);
@@ -683,7 +703,7 @@ namespace FNPlugin
                             if (transmitterDistance <= 0) continue;
 
                             double newDistance = relayRoute.Distance + transmitterDistance;// total distance from receiver by this relay to transmitter
-                            double efficiencyByThisRelay = ComputeTransmissionEfficiency(newDistance, relayRouteFacingFactor);//efficiency
+                            double efficiencyByThisRelay = ComputeDistanceFacingEfficiency(newDistance, relayRouteFacingFactor);//efficiency
                             MicrowaveRoute currentOptimalRoute;
 
                             var transmitter = transmittersToCheck[t];
@@ -711,10 +731,11 @@ namespace FNPlugin
                             double distanceToNextRelay = relayToRelayDistances[relayEntry.Value, r];
 
                             if (distanceToNextRelay <= 0) continue;
+
                             //if (distanceToNextRelay > 0) //any relay which is in LOS of this relay
                             //{
                                 double relayToNextRelayDistance = relayRoute.Distance + distanceToNextRelay;
-                                double efficiencyByThisRelay = ComputeTransmissionEfficiency(relayToNextRelayDistance, relayRouteFacingFactor);
+                                double efficiencyByThisRelay = ComputeDistanceFacingEfficiency(relayToNextRelayDistance, relayRouteFacingFactor);
 
                                 MicrowaveRoute currentOptimalPredecessor;
 
